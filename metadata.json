@@ -1,6 +1,6 @@
 {
-  "name": "Medical Anki Generator Pro",
-  "description": "A high-end medical image to Anki card generator featuring OCR, AI polishing, and 'Grandma-style' expert explanations.",
+  "name": "Medical Anki GLM-4-Plus Edition",
+  "description": "基于智谱最新 GLM-4v-plus 视觉模型与 GLM-4-plus 文本模型的医学荧光笔记 Anki 批量合并生成器。",
   "requestFramePermissions": [
     "camera"
   ]

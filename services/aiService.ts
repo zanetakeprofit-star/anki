@@ -1,78 +1,112 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { ZhipuModel } from "../types";
 
-// Use provided hardcoded keys
-const DEEPSEEK_API_KEY = "sk-306433a4c53f43459c54ebfdfe5f5ccf";
-const GEMINI_API_KEY = "sk-gobdDAJlNQ0KuAVUehO0SR1KjvRy5WnyK0Z4CrrbKQSexHTd";
+// 智谱 API Key: 由用户提供
+const ZHIPU_API_KEY = "c9c38c320b9740e79e8ebc61e677aa91.dqaJqFOH3VFJUEbY";
+const ZHIPU_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+/**
+ * 步骤 1: 使用视觉模型识别图片内容和荧光标记
+ */
+export async function performOCR(base64Image: string, model: ZhipuModel = 'glm-4v-plus'): Promise<string> {
+  const imageData = base64Image.includes('base64,') ? base64Image : `data:image/jpeg;base64,${base64Image}`;
+  
+  // 视觉识别必须用带有 'v' 的模型
+  const visionModel = model.includes('v') ? model : 'glm-4v-plus';
 
-export async function performOCR(base64Image: string): Promise<string> {
-  const model = "gemini-3-flash-preview";
   const prompt = `
-你是顶尖的医学文档数字化专家。
+你是医学数字化与视觉分析专家。
 【任务】
-精准识别图片中的医学题目、选项及所有标记。
-【关键要求】
-1. **结构还原**：遇到表格时，必须将其转化为清晰的文本列表，不要把列混在一起。
-2. **标记识别**：识别图片中的黄色高亮、红框、下划线位置，并用 {{BLANK}} 替换该处文字。
-3. **纯净输出**：只输出识别到的文字内容，不要输出 "这是一张图片" 之类的废话，不要 Markdown 代码块。
+1. 提取图中所有文字，严格保持逻辑层级。
+2. **核心识别**：精准找出被荧光笔（黄/绿/蓝）、红框、下划线标记的内容。
+3. 将标记内容包裹在 <mark>标记内容</mark> 标签中。
+【结构化要求】
+- 如果图中包含表格、流程图或对比列表，请用文字清晰描述其对应关系。
+- 只输出识别结果，禁止任何开场白。
   `;
 
-  const response = await ai.models.generateContent({
-    model,
-    contents: {
-      parts: [
-        { inlineData: { mimeType: "image/jpeg", data: base64Image.split(',')[1] || base64Image } },
-        { text: prompt }
-      ]
-    }
-  });
-
-  const text = response.text;
-  if (!text || text.trim().length === 0) {
-    throw new Error("OCR 识别结果为空，请确保图片清晰且包含文字。");
-  }
-  return text.trim();
-}
-
-export async function generateAnkiCard(rawText: string): Promise<{ front: string; back: string }> {
-  const prompt = `
-你是医学 Anki 制作专家。
-【任务】
-将 OCR 识别出的医学题目转化为适合 Anki 导入的问答对。
-【要求】
-1. **正面 (front)**：题目全文 + 选项。必须保留 {{BLANK}} 标记。
-2. **反面 (back)**：直接给出正确选项及核心答案文字。**严禁** 提供冗长的机制解析、背景知识或“老奶奶”式教学。
-3. **排版**：使用 Markdown 加粗核心关键词。段落之间空一行。
-【输出限制】
-必须且仅能输出纯 JSON 格式（不要 Markdown 代码块包裹），格式如下：
-{
-  "front": "题目内容...",
-  "back": "正确答案..."
-}
-  `;
-
-  const response = await fetch("https://api.deepseek.com/chat/completions", {
+  const response = await fetch(ZHIPU_ENDPOINT, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": `Bearer ${DEEPSEEK_API_KEY}`
+      "Authorization": `Bearer ${ZHIPU_API_KEY}`
     },
     body: JSON.stringify({
-      model: "deepseek-chat",
+      model: visionModel,
       messages: [
-        { role: "system", content: prompt },
-        { role: "user", content: rawText }
+        {
+          role: "user",
+          content: [
+            { type: "text", text: prompt },
+            { type: "image_url", image_url: { url: imageData } }
+          ]
+        }
       ],
-      response_format: { type: 'json_object' },
       stream: false
     })
   });
 
   if (!response.ok) {
-    throw new Error(`DeepSeek API 错误: ${response.statusText}`);
+    const error = await response.json().catch(() => ({}));
+    throw new Error(`OCR 失败: ${error?.error?.message || response.statusText}`);
   }
+
+  const data = await response.json();
+  return data.choices[0].message.content.trim();
+}
+
+/**
+ * 步骤 2: 将标记文本转化为极致美感的 Anki 卡片
+ */
+export async function generateAnkiCard(rawTextWithTags: string, model: ZhipuModel = 'glm-4-plus'): Promise<{ front: string; back: string }> {
+  // 文本处理模型选择
+  const textModel = model.includes('v') ? 'glm-4-plus' : model;
+
+  const prompt = `
+你是顶级医学教育专家与排版美学家。你现在的任务是处理 OCR 后的医学文本，并将其转化为 Anki 卡片。
+
+【核心排版指令 - 必须严格执行】
+1. **多空合并**：一张图只做一张卡。将所有 <mark>内容</mark> 替换为编号填空 (1)____, (2)____。
+2. **拒绝 Markdown 表格**：严禁使用 | --- | 这种 Markdown 表格。
+3. **强制使用 HTML <table>**：如果涉及对比、解剖层次、药理分类、鉴别诊断，**必须** 使用 HTML <table> 标签。
+   - 表格必须包含 <thead>, <tbody>, <tr>, <th>, <td>。
+   - 样式要求：给 <table> 加上样式 class="anki-table"。
+4. **视觉呼吸感**：
+   - 段落之间必须使用 <br><br> 分隔。
+   - 标题使用 <b> 或 <h3> 标签。
+   - 重要的医学术语使用 <span style="color: #e67e22; font-weight: bold;"> 包裹。
+
+【输出任务】
+- **正面 (front)**：包含完整的医学背景描述，将重点挖空。如果原文是表格，正面也要以 HTML 表格呈现，但把重点内容挖空。
+- **反面 (back)**：按编号列出答案。提供“老奶奶都能懂”的深度解析（分子->细胞->器官），解析逻辑转折处必须换行。
+
+【输出格式】
+必须返回纯 JSON 对象，不要包含任何 Markdown 代码块：
+{
+  "front": "HTML格式的正面内容",
+  "back": "HTML格式的反面内容"
+}
+  `;
+
+  const response = await fetch(ZHIPU_ENDPOINT, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${ZHIPU_API_KEY}`
+    },
+    body: JSON.stringify({
+      model: textModel,
+      messages: [
+        { role: "system", content: prompt },
+        { role: "user", content: rawTextWithTags }
+      ],
+      response_format: { type: 'json_object' },
+      temperature: 0.7,
+      stream: false
+    })
+  });
+
+  if (!response.ok) throw new Error(`模型调用失败: ${response.status}`);
 
   const data = await response.json();
   const content = data.choices[0].message.content.trim();
@@ -80,7 +114,8 @@ export async function generateAnkiCard(rawText: string): Promise<{ front: string
   try {
     return JSON.parse(content);
   } catch (e) {
-    console.error("DeepSeek JSON Parsing failed", content);
-    throw new Error("模型返回的数据格式无法解析为 JSON，请重试。");
+    // 容错处理：去除可能的 Markdown 标记
+    const cleaned = content.replace(/```json|```/g, "").trim();
+    return JSON.parse(cleaned);
   }
 }

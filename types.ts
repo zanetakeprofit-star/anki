@@ -24,3 +24,5 @@ export interface ProcessingState {
   step: ProcessingStep;
   message: string;
 }
+
+export type ZhipuModel = 'glm-4-plus' | 'glm-4-flash' | 'glm-4v-plus' | 'glm-4v';

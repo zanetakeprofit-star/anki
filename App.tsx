@@ -1,20 +1,22 @@
 
 import React, { useState, useRef, useMemo } from 'react';
 import { performOCR, generateAnkiCard } from './services/aiService';
-import { ProcessingState, ImageItem, AnkiCard } from './types';
+import { ProcessingState, ImageItem, AnkiCard, ZhipuModel } from './types';
 
 const App: React.FC = () => {
   const [imageItems, setImageItems] = useState<ImageItem[]>([]);
+  const [selectedModel, setSelectedModel] = useState<ZhipuModel>('glm-4-plus');
   const [status, setStatus] = useState<ProcessingState>({ step: 'idle', message: '' });
   const [isProcessing, setIsProcessing] = useState(false);
+  const [previewItem, setPreviewItem] = useState<ImageItem | null>(null);
+  const [showGuide, setShowGuide] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files) {
-      const newFiles = Array.from(files).slice(0, 100); // 限制最多100张
-      
+      const newFiles = Array.from(files).slice(0, 100); 
       const promises = newFiles.map(file => {
         return new Promise<ImageItem>((resolve) => {
           const reader = new FileReader();
@@ -28,70 +30,47 @@ const App: React.FC = () => {
           reader.readAsDataURL(file);
         });
       });
-
       Promise.all(promises).then(items => {
-        setImageItems(prev => [...prev, ...items].slice(0, 100));
-        setStatus({ step: 'idle', message: `已添加 ${items.length} 张图片` });
+        setImageItems(prev => [...prev, ...items]);
+        setStatus({ step: 'idle', message: `已导入 ${items.length} 张图片` });
       });
     }
   };
 
   const startBatchProcess = async () => {
     if (imageItems.length === 0 || isProcessing) return;
-    
     setIsProcessing(true);
-    setStatus({ step: 'processing', message: '正在启动批量处理流水线...' });
-
     const updatedItems = [...imageItems];
 
     for (let i = 0; i < updatedItems.length; i++) {
       if (updatedItems[i].status === 'done') continue;
-
       try {
-        // 更新状态为处理中
         updatedItems[i].status = 'processing';
         setImageItems([...updatedItems]);
-        setStatus({ 
-          step: 'processing', 
-          message: `正在处理第 ${i + 1}/${updatedItems.length} 张图片...` 
-        });
+        setStatus({ step: 'processing', message: `正在调用 ${selectedModel} 处理 (${i + 1}/${updatedItems.length})` });
 
-        // 步骤 1: OCR
-        const rawText = await performOCR(updatedItems[i].data);
-        
-        // 步骤 2: 生成卡片
-        const card = await generateAnkiCard(rawText);
+        const rawText = await performOCR(updatedItems[i].data, selectedModel);
+        const card = await generateAnkiCard(rawText, selectedModel);
         
         updatedItems[i].card = card;
         updatedItems[i].status = 'done';
+        if (!previewItem) setPreviewItem(updatedItems[i]);
       } catch (error: any) {
-        console.error(`Error processing image ${i}:`, error);
         updatedItems[i].status = 'error';
         updatedItems[i].errorMessage = error.message;
       }
-      
       setImageItems([...updatedItems]);
     }
-
     setIsProcessing(false);
-    setStatus({ step: 'completed', message: '批量处理任务已完成！' });
-  };
-
-  const clearAll = () => {
-    if (isProcessing) return;
-    setImageItems([]);
-    setStatus({ step: 'idle', message: '' });
-    if (fileInputRef.current) fileInputRef.current.value = '';
+    setStatus({ step: 'completed', message: '批量生成任务已完成' });
   };
 
   const downloadAllAnki = () => {
     const successCards = imageItems.filter(item => item.status === 'done' && item.card);
-    if (successCards.length === 0) return;
-
     const fileContent = successCards.map(item => {
       const card = item.card!;
-      const cleanFront = card.front.replace(/\t/g, ' ').replace(/\n/g, '<br><br>');
-      const cleanBack = card.back.replace(/\t/g, ' ').replace(/\n/g, '<br><br>');
+      const cleanFront = card.front.replace(/\t/g, ' ').replace(/\n/g, ' ');
+      const cleanBack = card.back.replace(/\t/g, ' ').replace(/\n/g, ' ');
       return `${cleanFront}\t${cleanBack}`;
     }).join('\n');
     
@@ -99,185 +78,213 @@ const App: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.download = `medical_anki_batch_${new Date().getTime()}.txt`;
+    link.download = `Medical_Anki_Export_${new Date().getTime()}.txt`;
     link.click();
-    URL.revokeObjectURL(url);
   };
 
-  const stats = useMemo(() => {
-    const total = imageItems.length;
-    const done = imageItems.filter(i => i.status === 'done').length;
-    const error = imageItems.filter(i => i.status === 'error').length;
-    const pending = imageItems.filter(i => i.status === 'pending' || i.status === 'processing').length;
-    return { total, done, error, pending };
-  }, [imageItems]);
+  const stats = useMemo(() => ({
+    total: imageItems.length,
+    done: imageItems.filter(i => i.status === 'done').length,
+    error: imageItems.filter(i => i.status === 'error').length,
+    pending: imageItems.filter(i => i.status === 'pending' || i.status === 'processing').length
+  }), [imageItems]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-8">
-      {/* Header */}
-      <header className="mb-8 text-center">
-        <h1 className="text-4xl font-extrabold text-slate-800 mb-2 flex items-center justify-center gap-3">
-          <i className="fas fa-layer-group text-blue-500"></i>
-          医学 Anki 批量生成器
+      <header className="mb-12 text-center relative">
+        <div className="absolute top-0 right-0">
+          <button 
+            onClick={() => setShowGuide(!showGuide)}
+            className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-full text-xs font-bold text-slate-600 hover:bg-slate-50 transition-all shadow-sm"
+          >
+            <i className={`fas ${showGuide ? 'fa-times' : 'fa-lightbulb'} text-yellow-500`}></i>
+            {showGuide ? '关闭指南' : '使用指南'}
+          </button>
+        </div>
+        <div className="inline-block bg-slate-900 text-white px-4 py-1 rounded-full text-xs font-bold mb-4 tracking-widest uppercase">
+          Medical Education Expert Edition
+        </div>
+        <h1 className="text-6xl font-black text-slate-900 mb-4 tracking-tighter">
+          医学制卡 <span className="text-yellow-500">PRO</span>
         </h1>
-        <p className="text-slate-500">支持一次上传 100 张图片，自动生成合并后的 Anki 导入文件</p>
+        <p className="text-slate-500 text-xl max-w-2xl mx-auto leading-relaxed">
+          采用智谱 <span className="font-bold text-slate-800">GLM-4-Plus</span> 最新架构，支持复杂 HTML 表格还原与多空合并识别。
+        </p>
       </header>
 
-      {/* Control Panel */}
-      <div className="glass-card rounded-2xl p-6 shadow-sm mb-6 flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center gap-6">
-          <div className="flex flex-col">
-            <span className="text-xs font-bold text-slate-400 uppercase">当前队列</span>
-            <span className="text-2xl font-black text-slate-700">{stats.total}<span className="text-sm font-normal text-slate-400 ml-1">/ 100</span></span>
-          </div>
-          <div className="h-10 w-[1px] bg-slate-200"></div>
-          <div className="flex gap-4">
-            <div className="text-center">
-              <div className="text-xs font-bold text-emerald-500 uppercase">成功</div>
-              <div className="text-lg font-bold text-slate-700">{stats.done}</div>
+      {/* Help Guide Section */}
+      {showGuide && (
+        <div className="mb-10 animate-in fade-in slide-in-from-top-4 duration-500">
+          <div className="glass-card rounded-[2rem] p-8 border-2 border-yellow-100 bg-yellow-50/30 shadow-xl grid grid-cols-1 md:grid-cols-3 gap-8">
+            <div className="space-y-3">
+              <div className="w-10 h-10 bg-yellow-400 rounded-xl flex items-center justify-center text-white shadow-lg">
+                <i className="fas fa-camera"></i>
+              </div>
+              <h3 className="font-black text-slate-800">图片拍摄建议</h3>
+              <p className="text-sm text-slate-500 leading-relaxed">
+                使用<b>充足的光源</b>，避免阴影遮挡文字。确保相机垂直于纸面拍摄。模型对微距拍摄的文字识别率更高。
+              </p>
             </div>
-            <div className="text-center">
-              <div className="text-xs font-bold text-rose-500 uppercase">失败</div>
-              <div className="text-lg font-bold text-slate-700">{stats.error}</div>
+            <div className="space-y-3">
+              <div className="w-10 h-10 bg-blue-500 rounded-xl flex items-center justify-center text-white shadow-lg">
+                <i className="fas fa-highlighter"></i>
+              </div>
+              <h3 className="font-black text-slate-800">荧光标记技巧</h3>
+              <p className="text-sm text-slate-500 leading-relaxed">
+                建议使用<b>亮黄色或翠绿色</b>荧光笔。对于表格内容，划出对比项。模型会自动识别并保留表格框架。
+              </p>
+            </div>
+            <div className="space-y-3">
+              <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center text-white shadow-lg">
+                <i className="fas fa-layer-group"></i>
+              </div>
+              <h3 className="font-black text-slate-800">关于卡片生成</h3>
+              <p className="text-sm text-slate-500 leading-relaxed">
+                <b>一张图生成一张卡</b>。同一页面内的多个标记会被合并为编号填空 (1)(2)，非常适合记忆复杂的鉴别诊断和机制。
+              </p>
             </div>
           </div>
         </div>
+      )}
 
-        <div className="flex items-center gap-3">
-          <button 
-            onClick={clearAll}
-            disabled={isProcessing || imageItems.length === 0}
-            className="px-4 py-2 text-slate-500 hover:text-rose-500 font-medium transition-colors disabled:opacity-30"
-          >
-            清空列表
-          </button>
+      {/* Toolbar */}
+      <div className="glass-card rounded-[2.5rem] p-8 shadow-2xl mb-10 border-2 border-slate-100 flex flex-wrap items-center justify-between gap-6">
+        <div className="flex items-center gap-8">
+          <div className="flex flex-col">
+            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2">选择驱动模型</label>
+            <select 
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value as ZhipuModel)}
+              className="h-14 bg-slate-50 border-2 border-slate-200 rounded-2xl px-5 font-bold text-slate-700 focus:border-slate-900 transition-all outline-none appearance-none cursor-pointer pr-10 relative"
+              style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 fill=%27none%27 viewBox=%270 0 24 24%27 stroke=%27%2364748b%27%3E%3Cpath stroke-linecap=%27round%27 stroke-linejoin=%27round%27 stroke-width=%272%27 d=%27M19 9l-7 7-7-7%27/%3E%3C/svg%3E")', backgroundRepeat: 'no-repeat', backgroundPosition: 'right 1rem center', backgroundSize: '1.5rem' }}
+            >
+              <option value="glm-4-plus">GLM-4-Plus (推荐：最新旗舰)</option>
+              <option value="glm-4v-plus">GLM-4V-Plus (最强视觉识别)</option>
+              <option value="glm-4-flash">GLM-4-Flash (超快响应)</option>
+              <option value="glm-4v">GLM-4V (经典视觉模型)</option>
+            </select>
+          </div>
           
+          <div className="h-16 w-px bg-slate-100"></div>
+
+          <div className="flex items-center gap-10">
+             <div className="text-center">
+                <span className="text-[10px] font-black text-slate-400 uppercase block mb-1">已就绪</span>
+                <span className="text-3xl font-black text-slate-900">{stats.total}</span>
+             </div>
+             <div className="text-center">
+                <span className="text-[10px] font-black text-emerald-500 uppercase block mb-1">成功</span>
+                <span className="text-3xl font-black text-emerald-600">{stats.done}</span>
+             </div>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-4">
+          <button 
+            onClick={() => { setImageItems([]); setPreviewItem(null); }}
+            className="h-14 px-6 text-slate-400 hover:text-rose-500 font-bold transition-all"
+          >
+            清空队列
+          </button>
           <button 
             onClick={() => fileInputRef.current?.click()}
-            disabled={isProcessing || imageItems.length >= 100}
-            className="px-6 py-2 bg-white border-2 border-blue-500 text-blue-600 font-bold rounded-xl hover:bg-blue-50 transition-all disabled:opacity-50"
+            className="h-14 px-8 bg-white border-2 border-slate-900 text-slate-900 font-black rounded-2xl hover:bg-slate-50 transition-all active:scale-95 shadow-lg"
           >
-            添加图片
+            导入笔记
           </button>
-
           <button 
             onClick={startBatchProcess}
-            disabled={isProcessing || imageItems.length === 0 || stats.pending === 0}
-            className="px-8 py-2 bg-blue-600 text-white font-bold rounded-xl shadow-lg shadow-blue-200 hover:bg-blue-700 transition-all disabled:opacity-50 flex items-center gap-2"
+            disabled={isProcessing || stats.total === 0}
+            className="h-14 px-10 bg-slate-900 text-white font-black rounded-2xl shadow-2xl hover:bg-black transition-all disabled:opacity-20 flex items-center gap-3"
           >
-            {isProcessing ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-play"></i>}
-            开始批量生成
+            {isProcessing ? <i className="fas fa-circle-notch fa-spin"></i> : <i className="fas fa-microchip text-yellow-400"></i>}
+            批量运行
           </button>
         </div>
       </div>
 
-      {/* Progress Bar */}
-      {isProcessing && (
-        <div className="mb-6 bg-white rounded-full h-4 overflow-hidden shadow-inner border border-slate-100">
-          <div 
-            className="h-full bg-blue-500 transition-all duration-500 ease-out"
-            style={{ width: `${(stats.done + stats.error) / stats.total * 100}%` }}
-          ></div>
-        </div>
-      )}
-
-      {/* Main Content Area */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left: Image List */}
-        <div className="lg:col-span-8">
-          <div className="glass-card rounded-2xl p-6 shadow-sm min-h-[600px]">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-bold text-slate-700 flex items-center gap-2">
-                <i className="fas fa-images text-indigo-500"></i>
-                图片队列预览
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
+        {/* Left: Queue & Gallery */}
+        <div className="lg:col-span-6">
+          <div className="glass-card rounded-[2.5rem] p-8 border border-slate-100 min-h-[650px] shadow-xl">
+            <div className="flex items-center justify-between mb-8">
+              <h2 className="text-2xl font-black text-slate-900 flex items-center gap-3">
+                <i className="fas fa-images text-slate-300"></i> 笔记素材库
               </h2>
-              <span className="text-sm text-slate-400">{status.message}</span>
+              <span className="px-4 py-1 bg-slate-100 rounded-full text-xs font-bold text-slate-500">
+                {status.message || "就绪"}
+              </span>
             </div>
-
-            {imageItems.length === 0 ? (
-              <div 
-                className="flex flex-col items-center justify-center py-20 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50/50 cursor-pointer hover:border-blue-300 transition-colors"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <i className="fas fa-cloud-upload-alt text-6xl text-slate-200 mb-4"></i>
-                <p className="text-slate-400 font-medium">还没有图片，点击或拖拽上传 (最多100张)</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
-                {imageItems.map((item, index) => (
-                  <div key={item.id} className="relative group aspect-square rounded-xl overflow-hidden border border-slate-200 bg-white shadow-sm">
-                    <img src={item.data} alt="Upload" className="w-full h-full object-cover" />
-                    
-                    {/* Status Overlay */}
-                    <div className={`absolute inset-0 flex flex-col items-center justify-center transition-all ${
-                      item.status === 'pending' ? 'bg-black/0 group-hover:bg-black/20' : 
-                      item.status === 'processing' ? 'bg-blue-600/60' : 
-                      item.status === 'done' ? 'bg-emerald-600/60' : 
-                      'bg-rose-600/60'
-                    }`}>
-                      {item.status === 'processing' && <i className="fas fa-spinner fa-spin text-white text-2xl"></i>}
-                      {item.status === 'done' && <i className="fas fa-check-circle text-white text-3xl"></i>}
-                      {item.status === 'error' && <i className="fas fa-times-circle text-white text-3xl"></i>}
-                      <span className="text-[10px] text-white font-bold mt-2 px-2 py-0.5 bg-black/20 rounded">
-                        #{index + 1}
-                      </span>
-                    </div>
+            
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-6">
+              {imageItems.map((item, idx) => (
+                <div 
+                  key={item.id} 
+                  onClick={() => setPreviewItem(item)}
+                  className={`group relative aspect-[3/4] rounded-3xl overflow-hidden border-4 cursor-pointer transition-all shadow-md ${
+                    previewItem?.id === item.id ? 'border-yellow-400 scale-105 z-10' : 'border-transparent'
+                  }`}
+                >
+                  <img src={item.data} className="w-full h-full object-cover" />
+                  <div className={`absolute inset-0 flex flex-col items-center justify-center backdrop-blur-[1px] transition-all ${
+                    item.status === 'done' ? 'bg-emerald-500/30' : 
+                    item.status === 'processing' ? 'bg-yellow-500/40' : 
+                    item.status === 'error' ? 'bg-rose-500/50' : 'bg-black/0 group-hover:bg-black/20'
+                  }`}>
+                    {item.status === 'processing' && <i className="fas fa-atom fa-spin text-white text-3xl"></i>}
+                    {item.status === 'done' && <i className="fas fa-check-circle text-white text-4xl shadow-lg"></i>}
+                    {item.status === 'error' && <i className="fas fa-exclamation-triangle text-white text-3xl"></i>}
                   </div>
-                ))}
-              </div>
-            )}
+                  <div className="absolute top-3 left-3 px-3 py-1 bg-black/60 text-[10px] font-black text-white rounded-full backdrop-blur-md">
+                    #{idx + 1}
+                  </div>
+                </div>
+              ))}
+              
+              {imageItems.length === 0 && (
+                <div className="col-span-full py-40 flex flex-col items-center justify-center border-4 border-dashed border-slate-50 rounded-[2rem]">
+                   <i className="fas fa-cloud-upload-alt text-7xl text-slate-100 mb-6"></i>
+                   <p className="text-slate-300 font-black text-xl">请导入医学笔记照片</p>
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
-        {/* Right: Export & Instructions */}
-        <div className="lg:col-span-4 space-y-6">
-          <div className="glass-card rounded-2xl p-6 shadow-sm">
-            <h2 className="text-lg font-bold text-slate-700 mb-4 flex items-center gap-2">
-              <i className="fas fa-file-download text-emerald-500"></i>
-              批量导出
-            </h2>
-            
-            <div className="p-4 bg-slate-50 rounded-xl border border-slate-100 mb-6">
-              <div className="flex justify-between text-sm mb-2">
-                <span className="text-slate-500">可导出卡片：</span>
-                <span className="font-bold text-emerald-600">{stats.done} 张</span>
+        {/* Right: Premium Preview */}
+        <div className="lg:col-span-6">
+           <div className="glass-card rounded-[2.5rem] p-8 border border-slate-100 h-full sticky top-8 shadow-2xl flex flex-col">
+              <div className="flex items-center justify-between mb-8 flex-shrink-0">
+                <h2 className="text-2xl font-black text-slate-900 flex items-center gap-3">
+                  <i className="fas fa-wand-magic-sparkles text-blue-500"></i> 卡片预览
+                </h2>
+                <button 
+                  onClick={downloadAllAnki}
+                  disabled={stats.done === 0}
+                  className="px-6 py-2 bg-slate-900 text-white text-xs font-black rounded-full shadow-xl disabled:opacity-20 hover:bg-black transition-all"
+                >
+                  导出制卡文件 (.txt)
+                </button>
               </div>
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">失败数量：</span>
-                <span className="font-bold text-rose-500">{stats.error} 张</span>
-              </div>
-            </div>
 
-            <button 
-              onClick={downloadAllAnki}
-              disabled={stats.done === 0 || isProcessing}
-              className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-lg shadow-emerald-200 transition-all disabled:opacity-30 flex flex-col items-center"
-            >
-              <div className="flex items-center gap-2">
-                <i className="fas fa-file-export"></i>
-                下载合并后的 Anki 文件
-              </div>
-              <span className="text-[10px] font-normal opacity-80 mt-1">共计 {stats.done} 条问答记录</span>
-            </button>
-
-            <div className="mt-8 space-y-4">
-              <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest">导入说明</h3>
-              <ul className="text-xs text-slate-500 space-y-2">
-                <li className="flex gap-2">
-                  <span className="font-bold text-blue-500">1.</span>
-                  下载的文件为 .txt 格式，包含所有处理成功的图片。
-                </li>
-                <li className="flex gap-2">
-                  <span className="font-bold text-blue-500">2.</span>
-                  导入 Anki 时，分隔符请务必选择 <b>Tab (制表符)</b>。
-                </li>
-                <li className="flex gap-2">
-                  <span className="font-bold text-blue-500">3.</span>
-                  务必勾选 <b>"允许字段中使用 HTML"</b>。
-                </li>
-              </ul>
-            </div>
-          </div>
+              {previewItem?.card ? (
+                <div className="space-y-8 overflow-y-auto pr-2 custom-scrollbar flex-1">
+                  <div className="p-8 bg-slate-50 rounded-[2rem] border border-slate-200 relative shadow-inner">
+                    <span className="absolute -top-3 left-8 px-4 py-1 bg-slate-900 text-white text-[10px] font-black rounded-full">FRONT 正面</span>
+                    <div className="anki-content prose prose-slate max-w-none" dangerouslySetInnerHTML={{ __html: previewItem.card.front }}></div>
+                  </div>
+                  <div className="p-8 bg-blue-50/50 rounded-[2rem] border border-blue-100 relative shadow-inner">
+                    <span className="absolute -top-3 left-8 px-4 py-1 bg-blue-600 text-white text-[10px] font-black rounded-full">BACK 反面</span>
+                    <div className="anki-content prose prose-blue max-w-none font-medium" dangerouslySetInnerHTML={{ __html: previewItem.card.back }}></div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex-1 flex flex-col items-center justify-center text-slate-200">
+                  <i className="fas fa-microscope text-8xl mb-6 opacity-10"></i>
+                  <p className="text-lg font-bold">处理完成后点击左侧图片查看 HTML 排版</p>
+                </div>
+              )}
+           </div>
         </div>
       </div>
 
@@ -289,6 +296,62 @@ const App: React.FC = () => {
         accept="image/*" 
         multiple 
       />
+      
+      <style>{`
+        @keyframes fadeIn {
+          from { opacity: 0; transform: translateY(-10px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-in {
+          animation: fadeIn 0.4s ease-out forwards;
+        }
+        .anki-content {
+          font-family: 'Inter', system-ui, -apple-system, sans-serif;
+          color: #1e293b;
+          line-height: 1.6;
+        }
+        .anki-content table {
+          width: 100%;
+          border-collapse: separate;
+          border-spacing: 0;
+          margin: 1.5rem 0;
+          background: white;
+          border: 1px solid #e2e8f0;
+          border-radius: 1rem;
+          overflow: hidden;
+          box-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.1);
+        }
+        .anki-content th, .anki-content td {
+          border-bottom: 1px solid #e2e8f0;
+          border-right: 1px solid #e2e8f0;
+          padding: 12px 16px;
+          text-align: left;
+        }
+        .anki-content th {
+          background: #f8fafc;
+          font-weight: 800;
+          color: #475569;
+          text-transform: uppercase;
+          font-size: 0.75rem;
+          letter-spacing: 0.05em;
+        }
+        .anki-content tr:last-child td {
+          border-bottom: none;
+        }
+        .anki-content td:last-child, .anki-content th:last-child {
+          border-right: none;
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+          width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+          background: #cbd5e1;
+          border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+          background: transparent;
+        }
+      `}</style>
     </div>
   );
 };
