@@ -1,0 +1,7 @@
+{
+  "name": "Medical Anki Generator Pro",
+  "description": "A high-end medical image to Anki card generator featuring OCR, AI polishing, and 'Grandma-style' expert explanations.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
